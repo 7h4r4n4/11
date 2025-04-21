@@ -1,0 +1,99 @@
+name: Build crDroid-based GSI with PHH Treble and GApps
+
+on:
+  push:
+    branches:
+      - main
+  pull_request:
+    branches:
+      - main
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    steps:
+    
+    # Checkout the repository
+    - name: Checkout code
+      uses: actions/checkout@v3
+
+    # Set up the build environment
+    - name: Set up environment
+      run: |
+        sudo apt-get update
+        sudo apt-get install -y repo gcc g++ make python3 wget curl unzip lzma bc xz-utils git
+
+    # Clone necessary repositories (PHH Treble, crDroid patches)
+    - name: Clone necessary repos
+      run: |
+        git clone https://github.com/AndyCGYan/lineage_build_unified.git
+        git clone https://github.com/phhusson/treble_experimentations.git
+        git clone https://github.com/crdroidandroid/android_build.git
+
+    # Initialize repo and sync
+    - name: Initialize repo
+      run: |
+        cd lineage_build_unified
+        source build/envsetup.sh
+        repo init -u https://github.com/AndyCGYan/lineage_build_unified -b lineage-18.1
+        repo sync -j$(nproc)
+
+    # Apply PHH Treble patches
+    - name: Apply PHH Treble patches
+      run: |
+        cd lineage_build_unified
+        bash ./treble_experimentations/apply_patches.sh ./treble_experimentations/patches/
+
+    # Apply crDroid patches
+    - name: Apply crDroid patches
+      run: |
+        cd lineage_build_unified
+        bash ./apply_crdroid_patches.sh
+
+    # Setup build configuration
+    - name: Setup build configuration
+      run: |
+        cd lineage_build_unified
+        source build/envsetup.sh
+        lunch lineage_arm64-userdebug  # or arm32_ab depending on architecture
+
+    # Build the GSI
+    - name: Build GSI
+      run: |
+        cd lineage_build_unified
+        make -j$(nproc) systemimage
+
+    # Download Minimal GApps (for Play Store)
+    - name: Download Minimal GApps
+      run: |
+        curl -L https://github.com/opengapps/arm64-minimal-gapps-android-11.x.zip -o gapps.zip
+
+    # Inject GApps into the built system image
+    - name: Inject GApps into system image
+      run: |
+        mkdir /tmp/gsi_mount
+        mkdir /tmp/gapps_mount
+        # Mount the system image
+        sudo mount -o loop out/target/product/generic/system.img /tmp/gsi_mount
+        # Extract GApps
+        unzip gapps.zip -d /tmp/gapps_mount
+        # Copy the GApps files to the mounted system image
+        sudo cp -r /tmp/gapps_mount/* /tmp/gsi_mount/system/
+        # Unmount the system image
+        sudo umount /tmp/gsi_mount
+
+    # Repack the system image after injecting GApps
+    - name: Repack system image
+      run: |
+        cd lineage_build_unified
+        # Repack the system image (use xz to compress it)
+        xz -z -k out/target/product/generic/system.img
+
+    # Upload the GSI with GApps to GitHub Releases
+    - name: Upload to GitHub Releases
+      uses: softprops/action-gh-release@v1
+      with:
+        files: |
+          out/target/product/generic/system.img.xz
+      env:
+        GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
